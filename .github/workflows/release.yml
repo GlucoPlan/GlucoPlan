@@ -1,0 +1,120 @@
+# .github/workflows/release.yml
+#
+# Запускается каждую ночь в 00:05 UTC (03:05 МСК).
+# Создаёт релиз ТОЛЬКО если версия в version.py
+# отличается от последнего тега на GitHub.
+# Также можно запустить вручную: Actions → Nightly Release → Run workflow.
+
+name: Nightly Release
+
+on:
+  schedule:
+    - cron: '5 0 * * *'
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version from version.py
+        id: ver
+        shell: python
+        run: |
+          import re, os
+          with open('version.py', encoding='utf-8') as f:
+              content = f.read()
+          m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', content)
+          version = m.group(1) if m else '0.0.0'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f"version={version}\n")
+              out.write(f"tag=v{version}\n")
+          print(f"Version: {version}")
+
+      - name: Check if tag already exists
+        id: tag_check
+        shell: bash
+        run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          if git ls-remote --tags origin "$TAG" | grep -q "$TAG"; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag $TAG already exists — skipping release."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Tag $TAG is new — will create release."
+          fi
+
+      - name: Set up Python
+        if: steps.tag_check.outputs.exists == 'false'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        if: steps.tag_check.outputs.exists == 'false'
+        shell: bash
+        run: pip install pyinstaller pillow
+
+      - name: Inject build date into version.py
+        if: steps.tag_check.outputs.exists == 'false'
+        shell: python
+        run: |
+          import re
+          from datetime import datetime, timezone
+          build_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+          with open('version.py', encoding='utf-8') as f:
+              content = f.read()
+          line = f'__build_date__ = "{build_date}"\n'
+          if '__build_date__' in content:
+              content = re.sub(r'__build_date__\s*=.*\n', line, content)
+          else:
+              content += '\n' + line
+          with open('version.py', 'w', encoding='utf-8') as f:
+              f.write(content)
+          print(f"Build date: {build_date}")
+
+      - name: Build with PyInstaller
+        if: steps.tag_check.outputs.exists == 'false'
+        shell: bash
+        run: pyinstaller GlucoPlan.spec --noconfirm
+
+      - name: Package into zip
+        if: steps.tag_check.outputs.exists == 'false'
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.ver.outputs.version }}"
+          $dir = "dist\GlucoPlan"
+          # Копируем help.html и README в папку сборки
+          if (Test-Path "help.html")   { Copy-Item "help.html"  "$dir\" }
+          if (Test-Path "Readme.md")   { Copy-Item "Readme.md"  "$dir\" }
+          Compress-Archive -Path "$dir" -DestinationPath "GlucoPlan-v${ver}-win64.zip"
+          Write-Output "Created GlucoPlan-v${ver}-win64.zip"
+
+      - name: Create tag and publish release
+        if: steps.tag_check.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: "GlucoPlan ${{ steps.ver.outputs.tag }}"
+          body: |
+            ## GlucoPlan ${{ steps.ver.outputs.version }}
+
+            ### Установка
+            1. Скачайте архив `GlucoPlan-v${{ steps.ver.outputs.version }}-win64.zip`
+            2. Распакуйте в любую папку
+            3. Запустите `GlucoPlan.exe`
+
+            **Обновление:** достаточно заменить только `GlucoPlan.exe` — файл `food.db` с вашими данными не затрагивается.
+
+            ### Что нового в этой версии
+            *(заполните вручную в интерфейсе GitHub после создания релиза)*
+          files: GlucoPlan-v${{ steps.ver.outputs.version }}-win64.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
