@@ -39,7 +39,7 @@ python main.py
 
 ## Telegram-канал
 
-Новости об обновлениях и ответы на вопросы: https://t.me/diabet_control_soft
+Новости об обновлениях и ответы на вопросы: https://t.me/glucoplan
 
 ---
 
